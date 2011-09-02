@@ -11,295 +11,383 @@ using NHibernate.Mapping;
 using NHibernate.Tool.hbm2ddl;
 using NHibernate.Type;
 using NUnit.Framework;
+using NHibernate.Hql.Classic;
+using NHibernate.Hql.Ast.ANTLR;
 
 namespace NHibernate.Test
 {
-	public abstract class TestCase
-	{
-		private const bool OutputDdl = false;
-		protected Configuration cfg;
-		protected ISessionFactoryImplementor sessions;
+    public abstract class TestCase
+    {
+        private const bool OutputDdl = false;
+        protected Configuration cfg;
+        protected ISessionFactoryImplementor sessions;
 
-		private static readonly ILog log = LogManager.GetLogger(typeof(TestCase));
+        private static readonly ILog log = LogManager.GetLogger(typeof(TestCase));
 
-		protected Dialect.Dialect Dialect
-		{
-			get { return NHibernate.Dialect.Dialect.GetDialect(cfg.Properties); }
-		}
+        protected Dialect.Dialect Dialect
+        {
+            get { return NHibernate.Dialect.Dialect.GetDialect(cfg.Properties); }
+        }
 
-		protected ISession lastOpenedSession;
+        protected TestDialect TestDialect
+        {
+            get { return TestDialect.GetTestDialect(Dialect); }
+        }
 
-		/// <summary>
-		/// Mapping files used in the TestCase
-		/// </summary>
-		protected abstract IList Mappings { get; }
+        /// <summary>
+        /// To use in in-line test
+        /// </summary>
+        protected bool IsClassicParser
+        {
+            get
+            {
+                return sessions.Settings.QueryTranslatorFactory is ClassicQueryTranslatorFactory;
+            }
+        }
 
-		/// <summary>
-		/// Assembly to load mapping files from (default is NHibernate.DomainModel).
-		/// </summary>
-		protected virtual string MappingsAssembly
-		{
-			get { return "NHibernate.DomainModel"; }
-		}
+        /// <summary>
+        /// To use in in-line test
+        /// </summary>
+        protected bool IsAntlrParser
+        {
+            get
+            {
+                return sessions.Settings.QueryTranslatorFactory is ASTQueryTranslatorFactory;
+            }
+        }
 
-		static TestCase()
-		{
-			// Configure log4net here since configuration through an attribute doesn't always work.
-			XmlConfigurator.Configure();
-		}
+        protected ISession lastOpenedSession;
+        private DebugConnectionProvider connectionProvider;
 
-		/// <summary>
-		/// Creates the tables used in this TestCase
-		/// </summary>
-		[TestFixtureSetUp]
-		public void TestFixtureSetUp()
-		{
-			try
-			{
-				Configure();
-				if (!AppliesTo(Dialect))
-				{
-					Assert.Ignore(GetType() + " does not apply to " + Dialect);
-				}
+        /// <summary>
+        /// Mapping files used in the TestCase
+        /// </summary>
+        protected abstract IList Mappings { get; }
 
-				CreateSchema();
-				BuildSessionFactory();
-			}
-			catch (Exception e)
-			{
-				log.Error("Error while setting up the test fixture", e);
-				throw;
-			}
-		}
+        /// <summary>
+        /// Assembly to load mapping files from (default is NHibernate.DomainModel).
+        /// </summary>
+        protected virtual string MappingsAssembly
+        {
+            get { return "NHibernate.DomainModel"; }
+        }
 
-		/// <summary>
-		/// Removes the tables used in this TestCase.
-		/// </summary>
-		/// <remarks>
-		/// If the tables are not cleaned up sometimes SchemaExport runs into
-		/// Sql errors because it can't drop tables because of the FKs.  This 
-		/// will occur if the TestCase does not have the same hbm.xml files
-		/// included as a previous one.
-		/// </remarks>
-		[TestFixtureTearDown]
-		public void TestFixtureTearDown()
-		{
-			DropSchema();
-			Cleanup();
-		}
+        static TestCase()
+        {
+            // Configure log4net here since configuration through an attribute doesn't always work.
+            XmlConfigurator.Configure();
+        }
 
-		protected virtual void OnSetUp()
-		{
-		}
+        /// <summary>
+        /// Creates the tables used in this TestCase
+        /// </summary>
+        [TestFixtureSetUp]
+        public void TestFixtureSetUp()
+        {
+            try
+            {
+                Configure();
+                if (!AppliesTo(Dialect))
+                {
+                    Assert.Ignore(GetType() + " does not apply to " + Dialect);
+                }
 
-		/// <summary>
-		/// Set up the test. This method is not overridable, but it calls
-		/// <see cref="OnSetUp" /> which is.
-		/// </summary>
-		[SetUp]
-		public void SetUp()
-		{
-			OnSetUp();
-		}
+                CreateSchema();
+                try
+                {
+                    BuildSessionFactory();
+                    if (!AppliesTo(sessions))
+                    {
+                        Assert.Ignore(GetType() + " does not apply with the current session-factory configuration");
+                    }
+                }
+                catch
+                {
+                    DropSchema();
+                    throw;
+                }
+            }
+            catch (Exception e)
+            {
+                Cleanup();
+                log.Error("Error while setting up the test fixture", e);
+                throw;
+            }
+        }
 
-		protected virtual void OnTearDown()
-		{
-		}
+        /// <summary>
+        /// Removes the tables used in this TestCase.
+        /// </summary>
+        /// <remarks>
+        /// If the tables are not cleaned up sometimes SchemaExport runs into
+        /// Sql errors because it can't drop tables because of the FKs.  This 
+        /// will occur if the TestCase does not have the same hbm.xml files
+        /// included as a previous one.
+        /// </remarks>
+        [TestFixtureTearDown]
+        public void TestFixtureTearDown()
+        {
+            if (!AppliesTo(Dialect))
+                return;
 
-		/// <summary>
-		/// Checks that the test case cleans up after itself. This method
-		/// is not overridable, but it calls <see cref="OnTearDown" /> which is.
-		/// </summary>
-		[TearDown]
-		public void TearDown()
-		{
-			OnTearDown();
+            DropSchema();
+            Cleanup();
+        }
 
-			bool wasClosed = CheckSessionWasClosed();
-			bool wasCleaned = CheckDatabaseWasCleaned();
-			bool fail = !wasClosed || !wasCleaned;
+        protected virtual void OnSetUp()
+        {
+        }
 
-			if (fail)
-			{
-				Assert.Fail("Test didn't clean up after itself");
-			}
-		}
+        /// <summary>
+        /// Set up the test. This method is not overridable, but it calls
+        /// <see cref="OnSetUp" /> which is.
+        /// </summary>
+        [SetUp]
+        public void SetUp()
+        {
+            OnSetUp();
+        }
 
-		private bool CheckSessionWasClosed()
-		{
-			if (lastOpenedSession != null && lastOpenedSession.IsOpen)
-			{
-				log.Error("Test case didn't close a session, closing");
-				lastOpenedSession.Close();
-				return false;
-			}
+        protected virtual void OnTearDown()
+        {
+        }
 
-			return true;
-		}
+        /// <summary>
+        /// Checks that the test case cleans up after itself. This method
+        /// is not overridable, but it calls <see cref="OnTearDown" /> which is.
+        /// </summary>
+        [TearDown]
+        public void TearDown()
+        {
+            OnTearDown();
 
-		private bool CheckDatabaseWasCleaned()
-		{
-			if (sessions.GetAllClassMetadata().Count == 0)
-			{
-				// Return early in the case of no mappings, also avoiding
-				// a warning when executing the HQL below.
-				return true;
-			}
+            bool wasClosed = CheckSessionWasClosed();
+            bool wasCleaned = CheckDatabaseWasCleaned();
+            bool wereConnectionsClosed = CheckConnectionsWereClosed();
+            bool fail = !wasClosed || !wasCleaned || !wereConnectionsClosed;
 
-			bool empty;
-			using (ISession s = sessions.OpenSession())
-			{
-				IList objects = s.CreateQuery("from System.Object o").List();
-				empty = objects.Count == 0;
-			}
+            if (fail)
+            {
+                Assert.Fail("Test didn't clean up after itself. session closed: " + wasClosed + " database cleaned: " + wasCleaned
+                    + " connection closed: " + wereConnectionsClosed);
+            }
+        }
 
-			if (!empty)
-			{
-				log.Error("Test case didn't clean up the database after itself, re-creating the schema");
-				DropSchema();
-				CreateSchema();
-			}
+        private bool CheckSessionWasClosed()
+        {
+            if (lastOpenedSession != null && lastOpenedSession.IsOpen)
+            {
+                log.Error("Test case didn't close a session, closing");
+                lastOpenedSession.Close();
+                return false;
+            }
 
-			return empty;
-		}
+            return true;
+        }
 
-		private void Configure()
-		{
-			cfg = new Configuration();
+        private bool CheckDatabaseWasCleaned()
+        {
+            if (sessions.GetAllClassMetadata().Count == 0)
+            {
+                // Return early in the case of no mappings, also avoiding
+                // a warning when executing the HQL below.
+                return true;
+            }
 
-			Assembly assembly = Assembly.Load(MappingsAssembly);
+            bool empty;
+            using (ISession s = sessions.OpenSession())
+            {
+                IList objects = s.CreateQuery("from System.Object o").List();
+                empty = objects.Count == 0;
+            }
 
-			foreach (string file in Mappings)
-			{
-				cfg.AddResource(MappingsAssembly + "." + file, assembly);
-			}
+            if (!empty)
+            {
+                log.Error("Test case didn't clean up the database after itself, re-creating the schema");
+                DropSchema();
+                CreateSchema();
+            }
 
-			Configure(cfg);
+            return empty;
+        }
 
-			ApplyCacheSettings(cfg);
-		}
+        private bool CheckConnectionsWereClosed()
+        {
+            if (connectionProvider == null || !connectionProvider.HasOpenConnections)
+            {
+                return true;
+            }
 
-		private void CreateSchema()
-		{
-			new SchemaExport(cfg).Create(OutputDdl, true);
-		}
+            log.Error("Test case didn't close all open connections, closing");
+            connectionProvider.CloseAllConnections();
+            return false;
+        }
 
-		private void DropSchema()
-		{
-			new SchemaExport(cfg).Drop(OutputDdl, true);
-		}
+        private void Configure()
+        {
+            cfg = new Configuration();
+            if (TestConfigurationHelper.hibernateConfigFile != null)
+                cfg.Configure(TestConfigurationHelper.hibernateConfigFile);
 
-		protected virtual void BuildSessionFactory()
-		{
-			sessions = (ISessionFactoryImplementor)cfg.BuildSessionFactory();
-		}
+            AddMappings(cfg);
 
-		private void Cleanup()
-		{
-			sessions.Close();
-			sessions = null;
-			lastOpenedSession = null;
-			cfg = null;
-		}
+            Configure(cfg);
 
-		public int ExecuteStatement(string sql)
-		{
-			if (cfg == null)
-			{
-				cfg = new Configuration();
-			}
+            ApplyCacheSettings(cfg);
+        }
 
-			using (IConnectionProvider prov = ConnectionProviderFactory.NewConnectionProvider(cfg.Properties))
-			{
-				IDbConnection conn = prov.GetConnection();
+        protected virtual void AddMappings(Configuration configuration)
+        {
+            Assembly assembly = Assembly.Load(MappingsAssembly);
 
-				try
-				{
-					using (IDbTransaction tran = conn.BeginTransaction())
-					using (IDbCommand comm = conn.CreateCommand())
-					{
-						comm.CommandText = sql;
-						comm.Transaction = tran;
-						comm.CommandType = CommandType.Text;
-						int result = comm.ExecuteNonQuery();
-						tran.Commit();
-						return result;
-					}
-				}
-				finally
-				{
-					prov.CloseConnection(conn);
-				}
-			}
-		}
+            foreach (string file in Mappings)
+            {
+                configuration.AddResource(MappingsAssembly + "." + file, assembly);
+            }
+        }
 
-		protected ISessionFactoryImplementor Sfi
-		{
-			get { return sessions; }
-		}
+        protected virtual void CreateSchema()
+        {
+            new SchemaExport(cfg).Create(OutputDdl, true);
+        }
 
-		protected virtual ISession OpenSession()
-		{
-			lastOpenedSession = sessions.OpenSession();
-			return lastOpenedSession;
-		}
+        private void DropSchema()
+        {
+            new SchemaExport(cfg).Drop(OutputDdl, true);
+        }
 
-		protected virtual ISession OpenSession(IInterceptor sessionLocalInterceptor)
-		{
-			lastOpenedSession = sessions.OpenSession(sessionLocalInterceptor);
-			return lastOpenedSession;
-		}
+        protected virtual void BuildSessionFactory()
+        {
+            sessions = (ISessionFactoryImplementor)cfg.BuildSessionFactory();
+            connectionProvider = sessions.ConnectionProvider as DebugConnectionProvider;
+        }
 
-		protected void ApplyCacheSettings(Configuration configuration)
-		{
-			if (CacheConcurrencyStrategy == null)
-			{
-				return;
-			}
+        private void Cleanup()
+        {
+            if (sessions != null)
+            {
+                sessions.Close();
+            }
+            sessions = null;
+            connectionProvider = null;
+            lastOpenedSession = null;
+            cfg = null;
+        }
 
-			foreach (PersistentClass clazz in configuration.ClassMappings)
-			{
-				bool hasLob = false;
-				foreach (Property prop in clazz.PropertyClosureIterator)
-				{
-					if (prop.Value.IsSimpleValue)
-					{
-						IType type = ((SimpleValue)prop.Value).Type;
-						if (type == NHibernateUtil.BinaryBlob)
-						{
-							hasLob = true;
-						}
-					}
-				}
-				if (!hasLob && !clazz.IsInherited)
-				{
-					configuration.SetCacheConcurrencyStrategy(clazz.EntityName, CacheConcurrencyStrategy);
-				}
-			}
+        public int ExecuteStatement(string sql)
+        {
+            if (cfg == null)
+            {
+                cfg = new Configuration();
+            }
 
-			foreach (Mapping.Collection coll in configuration.CollectionMappings)
-			{
-				configuration.SetCollectionCacheConcurrencyStrategy(coll.Role, CacheConcurrencyStrategy);
-			}
-		}
+            using (IConnectionProvider prov = ConnectionProviderFactory.NewConnectionProvider(cfg.Properties))
+            {
+                IDbConnection conn = prov.GetConnection();
 
-		#region Properties overridable by subclasses
+                try
+                {
+                    using (IDbTransaction tran = conn.BeginTransaction())
+                    using (IDbCommand comm = conn.CreateCommand())
+                    {
+                        comm.CommandText = sql;
+                        comm.Transaction = tran;
+                        comm.CommandType = CommandType.Text;
+                        int result = comm.ExecuteNonQuery();
+                        tran.Commit();
+                        return result;
+                    }
+                }
+                finally
+                {
+                    prov.CloseConnection(conn);
+                }
+            }
+        }
 
-		protected virtual bool AppliesTo(Dialect.Dialect dialect)
-		{
-			return true;
-		}
+        public int ExecuteStatement(ISession session, ITransaction transaction, string sql)
+        {
+            using (IDbCommand cmd = session.Connection.CreateCommand())
+            {
+                cmd.CommandText = sql;
+                if (transaction != null)
+                    transaction.Enlist(cmd);
+                return cmd.ExecuteNonQuery();
+            }
+        }
 
-		protected virtual void Configure(Configuration configuration)
-		{
-		}
+        protected ISessionFactoryImplementor Sfi
+        {
+            get { return sessions; }
+        }
 
-		protected virtual string CacheConcurrencyStrategy
-		{
-			get { return "nonstrict-read-write"; }
-			//get { return null; }
-		}
+        protected virtual ISession OpenSession()
+        {
+            lastOpenedSession = sessions.OpenSession();
+            return lastOpenedSession;
+        }
 
-		#endregion
-	}
+        protected virtual ISession OpenSession(IInterceptor sessionLocalInterceptor)
+        {
+            lastOpenedSession = sessions.OpenSession(sessionLocalInterceptor);
+            return lastOpenedSession;
+        }
+
+        protected void ApplyCacheSettings(Configuration configuration)
+        {
+            if (CacheConcurrencyStrategy == null)
+            {
+                return;
+            }
+
+            foreach (PersistentClass clazz in configuration.ClassMappings)
+            {
+                bool hasLob = false;
+                foreach (Property prop in clazz.PropertyClosureIterator)
+                {
+                    if (prop.Value.IsSimpleValue)
+                    {
+                        IType type = ((SimpleValue)prop.Value).Type;
+                        if (type == NHibernateUtil.BinaryBlob)
+                        {
+                            hasLob = true;
+                        }
+                    }
+                }
+                if (!hasLob && !clazz.IsInherited)
+                {
+                    configuration.SetCacheConcurrencyStrategy(clazz.EntityName, CacheConcurrencyStrategy);
+                }
+            }
+
+            foreach (Mapping.Collection coll in configuration.CollectionMappings)
+            {
+                configuration.SetCollectionCacheConcurrencyStrategy(coll.Role, CacheConcurrencyStrategy);
+            }
+        }
+
+        #region Properties overridable by subclasses
+
+        protected virtual bool AppliesTo(Dialect.Dialect dialect)
+        {
+            return true;
+        }
+
+        protected virtual bool AppliesTo(ISessionFactoryImplementor factory)
+        {
+            return true;
+        }
+
+        protected virtual void Configure(Configuration configuration)
+        {
+        }
+
+        protected virtual string CacheConcurrencyStrategy
+        {
+            get { return "nonstrict-read-write"; }
+            //get { return null; }
+        }
+
+        #endregion
+    }
 }
